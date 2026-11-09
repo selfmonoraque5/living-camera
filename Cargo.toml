@@ -1,0 +1,11 @@
+[package]
+name = "horizon-mod-living-camera"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Living Camera for Horizon, a native mod: a camera that leans, tips, sways, dips, bobs and breathes with your movement."
+
+# The mod's logic and its tests: the same file the bundle adds to the game.
+[lib]
+path = "mixins/living_camera/runtime.rs"
