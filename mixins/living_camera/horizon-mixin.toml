@@ -1,6 +1,6 @@
 [mod]
 id = "living_camera"
-version = "1.0.0"
+version = "1.1.0"
 priority = 100
 
 # The Horizon commit it was written against (Nightly 2026-11-08). It uses
@@ -65,6 +65,16 @@ bindings = [
   { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
   { name = "player", ty = "&horizon_client::camera::FovPlayer", value = "player" },
   { name = "modifier", ty = "&mut f32", value = "&mut *modifier" },
+]
+
+[[injection]]
+id = "health"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_health_hud"
+helper = "health.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "inputs", ty = "&horizon_client::hud_layout::HealthInputs", value = "inputs" },
 ]
 
 [[injection]]

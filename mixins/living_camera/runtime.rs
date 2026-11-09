@@ -1,8 +1,9 @@
 // Living Camera for Horizon: the camera leans into strafes, tips with
-// jumps and falls, sways when you turn fast, dips when you land, bobs with
-// your steps and breathes when you stand still, all on springs so it eases in
-// and settles; the first-person hand lags behind the view and the FOV can
-// widen with speed. Every effect has its own strength on the settings page.
+// jumps and falls, sways when you turn fast, dips when you land, shakes when
+// you're hit, bobs with your steps and breathes when you stand still, all on
+// springs so it eases in and settles; the first-person hand lags behind the
+// view and the FOV can widen with speed. Every effect has its own strength on
+// the settings page, with presets, and it calms down while you aim or ride.
 // Inspired by Mirsario's Camera Overhaul, written from scratch on Horizon's
 // hook points (none of its code). This file is both the mod's Cargo library
 // (its tests) and the module the bundle adds to the game.
@@ -16,7 +17,7 @@ use std::f32::consts::TAU;
 /// The mod's id (its settings folder), name and version.
 pub const ID: &str = "living_camera";
 pub const NAME: &str = "Living Camera";
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.1.0";
 pub const DESCRIPTION: &str = "The camera leans into strafes, tips with jumps and falls, sways on turns, dips on landing, bobs with your steps and breathes. Every effect is adjustable.";
 
 /// The key that turns the whole mod on and off (unbound until the player
@@ -59,6 +60,15 @@ const FOV_PER_SPEED: f32 = 0.008;
 const MAX_FOV: f32 = 0.15;
 /// The fast-travel fade goes from all to nothing over this many blocks a second.
 const FADE_SPAN: f32 = 8.0;
+/// Damage shake: degrees a second of roll and pitch kick per health point
+/// lost, the most health counted for one hit, and its springs.
+const HIT_ROLL: f32 = 12.0;
+const HIT_PITCH: f32 = 8.0;
+const MAX_HIT: f32 = 10.0;
+const HIT_STIFFNESS: f32 = 350.0;
+const HIT_DAMPING: f32 = 0.35;
+/// Seconds without word from the health HUD before its health and mount are forgotten.
+const HEALTH_STALE: f32 = 0.5;
 /// The hand's lag: blocks per degree a second of turning, and its limit.
 const HAND_LAG: f32 = 0.0004;
 const MAX_HAND_LAG: f32 = 0.08;
@@ -108,14 +118,19 @@ const FAST_TRAVEL: &[(u16, &str)] = &[
 const DIRECTION: &[(u16, &str)] = &[(0, "Normal"), (1, "Inverted")];
 
 /// The options, in page order. `O::*` index it.
-pub const OPTS: [Opt; 17] = [
+/// The presets; Custom is what the settings become once one is changed by hand.
+const PRESET: &[(u16, &str)] = &[(0, "Custom"), (1, "Subtle"), (2, "Default"), (3, "Cinematic"), (4, "PvP")];
+
+pub const OPTS: [Opt; 21] = [
     Opt { key: "enabled", label: "Living Camera", choices: ON_OFF, default: 1 },
+    Opt { key: "preset", label: "Preset", choices: PRESET, default: 2 },
     Opt { key: "intensity", label: "Overall intensity", choices: INTENSITY, default: 100 },
     Opt { key: "strafe", label: "Strafe lean", choices: STRENGTH, default: 100 },
     Opt { key: "forward", label: "Forward lean", choices: STRENGTH, default: 100 },
     Opt { key: "turn", label: "Turn sway", choices: STRENGTH, default: 100 },
     Opt { key: "vertical", label: "Jump and fall tilt", choices: STRENGTH, default: 100 },
     Opt { key: "landing", label: "Landing dip", choices: STRENGTH, default: 100 },
+    Opt { key: "damage", label: "Damage shake", choices: STRENGTH, default: 100 },
     Opt { key: "step_bob", label: "Step bob", choices: STRENGTH, default: 50 },
     Opt { key: "breathing", label: "Idle breathing", choices: STRENGTH, default: 0 },
     Opt { key: "speed_fov", label: "Speed FOV", choices: STRENGTH, default: 0 },
@@ -124,6 +139,8 @@ pub const OPTS: [Opt; 17] = [
     Opt { key: "bounce", label: "Bounce", choices: BOUNCE, default: 80 },
     Opt { key: "swimming", label: "While swimming", choices: CONTEXT, default: 50 },
     Opt { key: "flying", label: "While flying (creative)", choices: CONTEXT, default: 75 },
+    Opt { key: "riding", label: "While riding mounts", choices: CONTEXT, default: 75 },
+    Opt { key: "aiming", label: "While aiming (bow, spyglass)", choices: CONTEXT, default: 25 },
     Opt { key: "fast_travel", label: "Fade out when fast", choices: FAST_TRAVEL, default: 12 },
     Opt { key: "direction", label: "Lean direction", choices: DIRECTION, default: 0 },
 ];
@@ -131,22 +148,59 @@ pub const OPTS: [Opt; 17] = [
 /// Indexes into `OPTS`.
 pub mod o {
     pub const ENABLED: usize = 0;
-    pub const INTENSITY: usize = 1;
-    pub const STRAFE: usize = 2;
-    pub const FORWARD: usize = 3;
-    pub const TURN: usize = 4;
-    pub const VERTICAL: usize = 5;
-    pub const LANDING: usize = 6;
-    pub const STEP_BOB: usize = 7;
-    pub const BREATHING: usize = 8;
-    pub const SPEED_FOV: usize = 9;
-    pub const HAND: usize = 10;
-    pub const SMOOTHNESS: usize = 11;
-    pub const BOUNCE: usize = 12;
-    pub const SWIMMING: usize = 13;
-    pub const FLYING: usize = 14;
-    pub const FAST_TRAVEL: usize = 15;
-    pub const DIRECTION: usize = 16;
+    pub const PRESET: usize = 1;
+    pub const INTENSITY: usize = 2;
+    pub const STRAFE: usize = 3;
+    pub const FORWARD: usize = 4;
+    pub const TURN: usize = 5;
+    pub const VERTICAL: usize = 6;
+    pub const LANDING: usize = 7;
+    pub const DAMAGE: usize = 8;
+    pub const STEP_BOB: usize = 9;
+    pub const BREATHING: usize = 10;
+    pub const SPEED_FOV: usize = 11;
+    pub const HAND: usize = 12;
+    pub const SMOOTHNESS: usize = 13;
+    pub const BOUNCE: usize = 14;
+    pub const SWIMMING: usize = 15;
+    pub const FLYING: usize = 16;
+    pub const RIDING: usize = 17;
+    pub const AIMING: usize = 18;
+    pub const FAST_TRAVEL: usize = 19;
+    pub const DIRECTION: usize = 20;
+}
+
+/// What a preset sets, in this order (the rest keep their values).
+pub const PRESET_KEYS: [usize; 15] = [
+    o::INTENSITY,
+    o::STRAFE,
+    o::FORWARD,
+    o::TURN,
+    o::VERTICAL,
+    o::LANDING,
+    o::DAMAGE,
+    o::STEP_BOB,
+    o::BREATHING,
+    o::SPEED_FOV,
+    o::HAND,
+    o::SMOOTHNESS,
+    o::BOUNCE,
+    o::RIDING,
+    o::AIMING,
+];
+
+/// Each preset's values for `PRESET_KEYS`. Default is the options' own defaults.
+pub fn preset_values(preset: u16) -> Option<[u16; 15]> {
+    Some(match preset {
+        // A light touch.
+        1 => [75, 50, 50, 50, 50, 50, 50, 25, 0, 0, 50, 120, 90, 50, 50],
+        2 => PRESET_KEYS.map(|i| OPTS[i].default),
+        // Stronger, floatier, bouncier: for videos.
+        3 => [125, 150, 100, 150, 150, 150, 150, 75, 50, 50, 150, 60, 65, 100, 50],
+        // Few distractions: small lean, no bob, quick springs, steady aim.
+        4 => [75, 50, 25, 25, 0, 50, 50, 0, 0, 0, 25, 300, 100, 25, 0],
+        _ => return None,
+    })
 }
 
 /// The label of the button after the options.
@@ -219,12 +273,33 @@ impl Settings {
             *self = Self::default();
             return self.stored();
         }
+        if i == o::PRESET {
+            // Subtle, Default, Cinematic, PvP and round again (Custom isn't chosen, it happens).
+            let next = self.values[o::PRESET] % 4 + 1;
+            self.apply_preset(next);
+            return self.stored();
+        }
         let Some(opt) = OPTS.get(i) else {
             return Vec::new();
         };
         let at = opt.choices.iter().position(|c| c.0 == self.values[i]).unwrap_or(0);
         self.values[i] = opt.choices[(at + 1) % opt.choices.len()].0;
-        vec![(opt.key, self.values[i].to_string())]
+        let mut stored = vec![(opt.key, self.values[i].to_string())];
+        if PRESET_KEYS.contains(&i) && self.values[o::PRESET] != 0 {
+            self.values[o::PRESET] = 0;
+            stored.push((OPTS[o::PRESET].key, "0".to_owned()));
+        }
+        stored
+    }
+
+    /// Sets the preset and the values it stands for.
+    pub fn apply_preset(&mut self, preset: u16) {
+        if let Some(values) = preset_values(preset) {
+            for (i, v) in PRESET_KEYS.iter().zip(values) {
+                self.values[*i] = v;
+            }
+            self.values[o::PRESET] = preset;
+        }
     }
 
     /// Turns the whole mod on or off (the toggle key): what to store.
@@ -333,6 +408,17 @@ struct Motion {
     on_ground: bool,
     swimming: bool,
     flying: bool,
+    /// Drawing a bow or looking through a spyglass (the FOV hook tells it).
+    aiming: bool,
+    /// On a living mount (the health HUD tells it).
+    riding: bool,
+    /// The health the HUD last showed, the damage since, and seconds since
+    /// the HUD last told (it doesn't under F1 or in creative).
+    last_health: Option<f32>,
+    hurt: f32,
+    health_age: f32,
+    /// The side the next damage shake rolls to.
+    hit_left: bool,
     last_view: Option<[f32; 2]>,
     /// Degrees a second, smoothed.
     yaw_rate: f32,
@@ -354,6 +440,9 @@ struct State {
     hand_x: Spring,
     hand_y: Spring,
     fov: Spring,
+    /// The damage shake: stiff, lightly damped springs, apart from the lean.
+    hit_roll: Spring,
+    hit_pitch: Spring,
     /// Step bob and breathing, added on top of the springs.
     bob: [f32; 3],
 }
@@ -372,9 +461,28 @@ pub fn set_settings(settings: Settings) {
     STATE.with_borrow_mut(|s| s.settings = Some(settings));
 }
 
-/// Whether the player flies in creative (the FOV hook tells it).
-pub fn set_flying(flying: bool) {
-    STATE.with_borrow_mut(|s| s.motion.flying = flying);
+/// Whether the player flies in creative and whether they aim (the FOV hook tells it).
+pub fn set_player(flying: bool, aiming: bool) {
+    STATE.with_borrow_mut(|s| {
+        s.motion.flying = flying;
+        s.motion.aiming = aiming;
+    });
+}
+
+/// The health HUD's view, each frame it draws: the player's health, and
+/// whether they ride a living mount. A drop in health shakes the camera.
+pub fn health(health: f32, riding: bool) {
+    STATE.with_borrow_mut(|s| {
+        let m = &mut s.motion;
+        if let Some(last) = m.last_health
+            && health < last - 0.01
+        {
+            m.hurt += last - health;
+        }
+        m.last_health = Some(health);
+        m.riding = riding;
+        m.health_age = 0.0;
+    });
 }
 
 /// A tick on the window: the player at `pos` facing `yaw`, eyes in water or
@@ -442,6 +550,18 @@ pub fn frame(dt: f32, view: Option<[f32; 2]>) {
         if m.flying {
             scale *= set.factor(o::FLYING);
         }
+        // The HUD stopped telling (F1, creative, a screen over the HUD): forget its health and mount.
+        m.health_age += dt;
+        if m.health_age > HEALTH_STALE {
+            m.last_health = None;
+            m.riding = false;
+        }
+        if m.riding {
+            scale *= set.factor(o::RIDING);
+        }
+        if m.aiming {
+            scale *= set.factor(o::AIMING);
+        }
         if view.is_none() || !set.enabled() {
             scale = 0.0;
         }
@@ -465,6 +585,19 @@ pub fn frame(dt: f32, view: Option<[f32; 2]>) {
         m.landed = 0.0;
         // The dip comes back on a stiffer spring, so it reads as a bump.
         s.dip.step(0.0, dt, stiffness * 1.5, damping);
+
+        // Damage shake: a jolt as big as the hit (up to `MAX_HIT` health), to
+        // alternating sides, that rings out on its own stiff springs.
+        if m.hurt > 0.0 {
+            let hit = m.hurt.min(MAX_HIT) * set.factor(o::DAMAGE) * scale;
+            let side = if m.hit_left { -1.0 } else { 1.0 };
+            m.hit_left = !m.hit_left;
+            s.hit_roll.kick(side * hit * HIT_ROLL);
+            s.hit_pitch.kick(-hit * HIT_PITCH);
+        }
+        m.hurt = 0.0;
+        s.hit_roll.step(0.0, dt, HIT_STIFFNESS, HIT_DAMPING);
+        s.hit_pitch.step(0.0, dt, HIT_STIFFNESS, HIT_DAMPING);
 
         // Step bob: on the ground, in step with the distance walked.
         let walking = m.on_ground && !m.swimming && !m.flying;
@@ -504,8 +637,8 @@ pub fn pose() -> Pose {
     STATE.with_borrow(|s| {
         let hand = s.settings.unwrap_or_default().factor(o::HAND);
         Pose {
-            pitch: s.pitch.value + s.bob[0],
-            roll: s.roll.value + s.bob[1],
+            pitch: s.pitch.value + s.bob[0] + s.hit_pitch.value,
+            roll: s.roll.value + s.bob[1] + s.hit_roll.value,
             rise: (s.dip.value + s.bob[2]).clamp(-MAX_DIP, MAX_DIP),
             hand: [s.hand_x.value, s.hand_y.value],
             hand_roll: s.roll.value * 0.5 * hand.min(1.0),
@@ -562,10 +695,16 @@ mod tests {
         assert_eq!(labels[o::ENABLED], "Living Camera: ON");
         assert_eq!(labels[o::SMOOTHNESS], "Smoothness: Normal");
         assert_eq!(labels[OPTS.len()], RESET_LABEL);
-        assert_eq!(s.click(o::STRAFE), [("strafe", "150".to_owned())]);
+        assert_eq!(s.labels()[o::PRESET], "Preset: Default");
+        // Changing an effect by hand makes the preset Custom.
+        assert_eq!(
+            s.click(o::STRAFE),
+            [("strafe", "150".to_owned()), ("preset", "0".to_owned())]
+        );
         assert_eq!(s.click(o::STRAFE), [("strafe", "200".to_owned())]);
         assert_eq!(s.click(o::STRAFE), [("strafe", "0".to_owned())]);
         assert_eq!(s.labels()[o::STRAFE], "Strafe lean: OFF");
+        assert_eq!(s.labels()[o::PRESET], "Preset: Custom");
         assert_eq!(s.toggle(), ("enabled", "0".to_owned()));
         assert!(!s.enabled());
         let stored = s.click(OPTS.len());
@@ -731,5 +870,119 @@ mod tests {
         let p = pose();
         assert!((p.roll - 120.0 * TURN_ROLL).abs() < 0.01, "{}", p.roll);
         assert!(p.hand[0] < 0.0);
+    }
+
+    #[test]
+    fn presets_are_valid_and_cycle() {
+        for preset in 1..=4 {
+            let values = preset_values(preset).unwrap();
+            for (i, v) in PRESET_KEYS.iter().zip(values) {
+                assert!(OPTS[*i].choices.iter().any(|c| c.0 == v), "preset {preset}: {}={v}", OPTS[*i].key);
+            }
+        }
+        assert!(preset_values(0).is_none());
+        let mut s = Settings::default();
+        // Default, then Cinematic, PvP, Subtle and back to Default.
+        let stored = s.click(o::PRESET);
+        assert_eq!(s.get(o::PRESET), 3);
+        assert_eq!(stored.len(), OPTS.len());
+        assert_eq!(s.get(o::SMOOTHNESS), 60);
+        s.click(o::PRESET);
+        assert_eq!(s.labels()[o::PRESET], "Preset: PvP");
+        assert_eq!((s.get(o::STEP_BOB), s.get(o::AIMING)), (0, 0));
+        s.click(o::PRESET);
+        assert_eq!(s.get(o::PRESET), 1);
+        s.click(o::PRESET);
+        assert_eq!(s, Settings::default(), "Default is the defaults");
+        // From Custom, the next preset is Subtle.
+        s.click(o::TURN);
+        s.click(o::PRESET);
+        assert_eq!(s.get(o::PRESET), 1);
+        // Presets leave the rest alone.
+        let mut s = Settings::default();
+        s.values[o::DIRECTION] = 1;
+        s.values[o::SWIMMING] = 0;
+        s.apply_preset(4);
+        assert_eq!((s.get(o::DIRECTION), s.get(o::SWIMMING)), (1, 0));
+    }
+
+    #[test]
+    fn damage_shakes_and_settles() {
+        set_settings(quiet());
+        tick(None, 0.0, false);
+        tick(Some([0.0, 64.0, 0.0]), 0.0, false);
+        health(20.0, false);
+        frame(1.0 / 60.0, Some([0.0, 0.0]));
+        assert!(pose().roll.abs() < 1e-4, "no hit yet");
+        // Lose 4 health: the camera jolts, both ways, then rings out.
+        health(16.0, false);
+        let mut peak = 0.0f32;
+        let mut crossed = false;
+        let mut last = 0.0f32;
+        for _ in 0..30 {
+            frame(1.0 / 60.0, Some([0.0, 0.0]));
+            health(16.0, false);
+            let r = pose().roll;
+            peak = peak.max(r.abs());
+            crossed |= last != 0.0 && r.signum() != last.signum();
+            last = r;
+        }
+        assert!(peak > 1.0 && peak < 6.0, "{peak}");
+        assert!(crossed, "it shakes, not just tilts");
+        for _ in 0..60 {
+            frame(1.0 / 60.0, Some([0.0, 0.0]));
+            health(16.0, false);
+        }
+        assert!(pose().roll.abs() < 0.05, "{}", pose().roll);
+        // Healing doesn't shake; damage shake OFF doesn't either.
+        health(20.0, false);
+        frame(1.0 / 60.0, Some([0.0, 0.0]));
+        assert!(pose().roll.abs() < 0.05);
+        let mut off = quiet();
+        off.values[o::DAMAGE] = 0;
+        set_settings(off);
+        health(10.0, false);
+        frame(1.0 / 60.0, Some([0.0, 0.0]));
+        assert!(pose().roll.abs() < 0.05);
+    }
+
+    #[test]
+    fn health_from_a_hidden_hud_is_forgotten() {
+        set_settings(quiet());
+        tick(None, 0.0, false);
+        health(20.0, true);
+        // F1 for a second: no word from the HUD.
+        for _ in 0..60 {
+            frame(1.0 / 60.0, Some([0.0, 0.0]));
+        }
+        // Back with less health (healing items, a respawn...): no shake from the gap.
+        health(12.0, false);
+        frame(1.0 / 60.0, Some([0.0, 0.0]));
+        assert!(pose().roll.abs() < 1e-4);
+    }
+
+    #[test]
+    fn aiming_and_riding_calm_the_lean() {
+        let mut s = quiet();
+        s.values[o::AIMING] = 25;
+        s.values[o::RIDING] = 50;
+        set_settings(s);
+        tick(None, 0.0, false);
+        let strafe = |start: f64| run(60, move |t| [start - (t as f64) * 0.28, 64.0, 0.0], 0.0).roll;
+        let full = strafe(0.0);
+        set_player(false, true);
+        let aimed = strafe(-16.8);
+        assert!((aimed - full * 0.25).abs() < 0.02, "{full} {aimed}");
+        set_player(false, false);
+        let mut riding = 0.0;
+        for t in 0..60 {
+            tick(Some([-33.6 - (t as f64) * 0.28, 64.0, 0.0]), 0.0, false);
+            for _ in 0..3 {
+                health(20.0, true);
+                frame(1.0 / 60.0, Some([0.0, 0.0]));
+            }
+            riding = pose().roll;
+        }
+        assert!((riding - full * 0.5).abs() < 0.02, "{full} {riding}");
     }
 }
