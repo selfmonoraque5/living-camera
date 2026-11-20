@@ -1,6 +1,6 @@
 <p align="center"><img src="icon.png" width="128" alt="Living Camera icon"></p>
 
-# Living Camera (Horizon native mod)
+# Living Camera (Horizon mod)
 
 A camera that moves with you. It leans into strafes, tips as you jump and fall, sways on fast turns, dips when you
 land, bobs with your steps and breathes while you stand still. Everything runs on springs, so the camera eases into
@@ -25,7 +25,7 @@ Client side only: it works in single player and on any server, and the server ne
 
 ## Settings
 
-Options > Mods > Living Camera > Settings. Each button steps through its values.
+Options > Mods > Living Camera > **Config**. Each button steps through its values.
 
 - **Living Camera**: ON / OFF, everything at once.
 - **Preset**: one click sets the effects, smoothness and bounce, then fine-tune anything (the preset then reads
@@ -49,41 +49,52 @@ Options > Mods > Living Camera > Settings. Each button steps through its values.
 - **Fade out when fast**: Never, or above 10, 12, 16 or 24 blocks a second. Elytra flight, boats and minecarts fade
   the effects out, so the mod stays out of the way of flight mods such as Gyro.
 - **Lean direction**: Normal or Inverted.
-- **Reset to defaults**.
 
-A **Toggle Living Camera** key turns the mod on and off in game; it starts unbound, set it in Options > Mods. Horizon
+A **Toggle Living Camera** key turns the mod on and off in game; it starts unbound, set it in Options > Controls. Horizon
 also scales camera motion by Accessibility > **Distortion Effects**: at 0% the camera effects disappear.
+
+Living Camera 2.0 is made for Horizon's mod API, so its settings start from the defaults again once: the 1.x
+settings files aren't read.
 
 ## Install
 
-In the Horizon launcher: Mods, find **Living Camera**, Install, then **Build**. To try a local copy, put the `.hnmod`
-in your instance's `horizon-native-mods/` folder and Build.
+Made for Horizon **Nightly 2026-11-19 · f00125f**.
+It uses only the mod API, so the launcher also builds it on later Horizon builds where nothing it uses
+changed.
+
+From GitHub:
+
+1. Download `living_camera-2.0.0.hmod` from the [latest release](https://github.com/selfmonoraque5/living-camera/releases/latest).
+2. Put it in the `horizon-native-mods` folder of your game folder, not in `mods`. On Windows that is
+   `%APPDATA%\horizon\horizon-native-mods`.
+3. In the launcher, open the Mods page and click **Build** (the first build downloads the mod SDK and takes a few
+   minutes). After a build the launcher can look stuck for a while as it cleans its cache: let it finish.
+4. When it says **Up to date**, play.
+
+Once it is listed in the Horizon registry: Mods, find **Living Camera**, Install.
+
+To build a local copy: `horizon-launcher native-build <this folder> --instance <instance> --trust-native-code`.
 
 ## Compatibility
 
-It uses only Horizon's native hook points and needs hook API **369** or later (`compatibility.json`), so the launcher
-builds it on any Horizon that has them. Last tested on Nightly `fdc87ae` (2026-11-08) with horizon-mixins `5a64af9`.
-Camera shakes from other mods add up with this one.
+A native mod on Horizon's mod API (`horizon-mod.toml`, `[native]`). It uses only the API's hooks and reads, no game
+internals, so the launcher also builds it on later Horizon builds where nothing it uses changed. Camera shakes from
+other mods add up with this one.
 
 ## How it works
 
 | File | What it is |
 |---|---|
-| `mixins/living_camera/horizon-mixin.toml` | The bundle: one module and its HEAD hooks |
-| `mixins/living_camera/runtime.rs` | The settings, the motion, the springs and the effects; also this crate's library, for its tests |
-| `tick.rs` | Each tick: how far you moved, and whether your eyes are in water |
-| `frame.rs` | Each frame: turning speed, and the springs' step |
-| `shake.rs` | Adds the pitch, roll and rise to the camera (`native_camera_shake`) |
-| `hand.rs` | The held item's lag and lean (`native_render_hand_pose`) |
-| `fov.rs` | Speed FOV, and whether you fly in creative or aim (`native_compute_fov_modifier`) |
-| `health.rs` | Your health (a drop shakes the camera) and whether you ride a mount (`native_health_hud`; it draws nothing) |
-| `key.rs`, `list.rs`, `settings.rs`, `click.rs` | The toggle key and the Options > Mods page |
+| `horizon-mod.toml` | The manifest: id, version and the Horizon build it is made for |
+| `src/lib.rs` | The hooks: settings and toggle key (`register`, `setting_changed`), movement each tick (`client_tick_post`), turning each frame (`render_frame_pre`), the camera (`camera_shake`), the hand (`render_hand`), Speed FOV and aiming (`compute_fov_modifier`), health, mounts and water (`health_hud`; it draws nothing) |
+| `src/camera.rs` | The settings, the motion, the springs and the effects, with their tests |
+| `assets/living_camera/lang/en_us.json` | The settings page's text |
 
-Damage shake and mount riding come from the health bar, so they don't act while the HUD is hidden (F1) or in creative
-mode, where there is no health bar.
+Damage shake, mount riding and the swimming calm come from the health bar, so they don't act while the HUD is hidden
+(F1) or in creative mode, where there is no health bar.
 
-The mod reads only your own player's position, view, health and the block at your eyes. It has no network, file or process
-access beyond Horizon's own settings files for the mod.
+The mod reads only your own player's position, view, health and the health bar's water and mount state. It has no
+network, file or process access beyond Horizon's own settings for the mod.
 
 ```sh
 cargo test    # the motion, springs and settings

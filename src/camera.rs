@@ -5,8 +5,8 @@
 // view and the FOV can widen with speed. Every effect has its own strength on
 // the settings page, with presets, and it calms down while you aim or ride.
 // Inspired by Mirsario's Camera Overhaul, written from scratch on Horizon's
-// hook points (none of its code). This file is both the mod's Cargo library
-// (its tests) and the module the bundle adds to the game.
+// mod API (none of its code). The game's hooks are in lib.rs; this module is
+// the camera itself, and its tests.
 //
 // Movement comes from the player's position each tick, turning from the view
 // each frame. Fast travel (elytra, boats, minecarts) fades the effects out,
@@ -14,15 +14,14 @@
 use std::cell::RefCell;
 use std::f32::consts::TAU;
 
-/// The mod's id (its settings folder), name and version.
+/// The mod's id (its settings folder) and name; the version is in horizon-mod.toml.
 pub const ID: &str = "living_camera";
 pub const NAME: &str = "Living Camera";
-pub const VERSION: &str = "1.1.0";
-pub const DESCRIPTION: &str = "The camera leans into strafes, tips with jumps and falls, sways on turns, dips on landing, bobs with your steps and breathes. Every effect is adjustable.";
 
 /// The key that turns the whole mod on and off (unbound until the player
 /// picks one in Options > Mods).
 pub const TOGGLE_KEY: &str = "toggle";
+#[cfg(test)]
 pub const TOGGLE_KEY_LABEL: &str = "Toggle Living Camera";
 pub const TOGGLE_KEY_DEFAULT: &str = "key.keyboard.unknown";
 
@@ -73,10 +72,12 @@ const HEALTH_STALE: f32 = 0.5;
 const HAND_LAG: f32 = 0.0004;
 const MAX_HAND_LAG: f32 = 0.08;
 
-/// One option of the settings page: its file, its label, the values a click
+/// One option of the settings page: its file, its label, the values the player
 /// cycles through (with their names) and the default.
 pub struct Opt {
     pub key: &'static str,
+    /// Its English label (en_us.json holds the page's text; the tests check they agree).
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the English labels test"))]
     pub label: &'static str,
     pub choices: &'static [(u16, &'static str)],
     pub default: u16,
@@ -203,9 +204,6 @@ pub fn preset_values(preset: u16) -> Option<[u16; 15]> {
     })
 }
 
-/// The label of the button after the options.
-pub const RESET_LABEL: &str = "Reset to defaults";
-
 /// The settings, one file each in the mod's data folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -253,45 +251,6 @@ impl Settings {
         self.values[o::ENABLED] != 0
     }
 
-    /// The settings page's buttons: the options, then reset.
-    pub fn labels(&self) -> Vec<String> {
-        let mut labels: Vec<String> = OPTS
-            .iter()
-            .zip(self.values)
-            .map(|(opt, v)| {
-                let name = opt.choices.iter().find(|c| c.0 == v).map_or("?", |c| c.1);
-                format!("{}: {name}", opt.label)
-            })
-            .collect();
-        labels.push(RESET_LABEL.into());
-        labels
-    }
-
-    /// A click on button `i` of `labels`: what to store, key by key.
-    pub fn click(&mut self, i: usize) -> Vec<(&'static str, String)> {
-        if i == OPTS.len() {
-            *self = Self::default();
-            return self.stored();
-        }
-        if i == o::PRESET {
-            // Subtle, Default, Cinematic, PvP and round again (Custom isn't chosen, it happens).
-            let next = self.values[o::PRESET] % 4 + 1;
-            self.apply_preset(next);
-            return self.stored();
-        }
-        let Some(opt) = OPTS.get(i) else {
-            return Vec::new();
-        };
-        let at = opt.choices.iter().position(|c| c.0 == self.values[i]).unwrap_or(0);
-        self.values[i] = opt.choices[(at + 1) % opt.choices.len()].0;
-        let mut stored = vec![(opt.key, self.values[i].to_string())];
-        if PRESET_KEYS.contains(&i) && self.values[o::PRESET] != 0 {
-            self.values[o::PRESET] = 0;
-            stored.push((OPTS[o::PRESET].key, "0".to_owned()));
-        }
-        stored
-    }
-
     /// Sets the preset and the values it stands for.
     pub fn apply_preset(&mut self, preset: u16) {
         if let Some(values) = preset_values(preset) {
@@ -308,10 +267,68 @@ impl Settings {
         (OPTS[o::ENABLED].key, self.values[o::ENABLED].to_string())
     }
 
-    /// Every setting, key by key.
-    pub fn stored(&self) -> Vec<(&'static str, String)> {
-        OPTS.iter().zip(self.values).map(|(opt, v)| (opt.key, v.to_string())).collect()
+    /// From the settings page, where each option is a choice: `index` gives the
+    /// option the player picked for a key (its position in `choices`).
+    pub fn from_choices(index: impl Fn(&str) -> Option<u32>) -> Self {
+        Self::read(|key| {
+            let opt = OPTS.iter().find(|opt| opt.key == key)?;
+            let at = usize::try_from(index(key)?).ok()?;
+            opt.choices.get(at).map(|c| c.0.to_string())
+        })
     }
+
+    /// Option `i`'s value as the page keeps it: its position in `choices`.
+    pub fn choice_index(&self, i: usize) -> String {
+        OPTS[i].choices.iter().position(|c| c.0 == self.values[i]).unwrap_or(0).to_string()
+    }
+
+    /// The player changed `key` on the page (kept already): a preset sets its
+    /// values, and an effect changed by hand makes the preset Custom. What else
+    /// to keep, key by key, as choice indexes.
+    pub fn changed(&mut self, key: &str) -> Vec<(&'static str, String)> {
+        let Some(i) = OPTS.iter().position(|opt| opt.key == key) else {
+            return Vec::new();
+        };
+        if i == o::PRESET {
+            if preset_values(self.values[o::PRESET]).is_none() {
+                return Vec::new();
+            }
+            self.apply_preset(self.values[o::PRESET]);
+            return PRESET_KEYS.iter().map(|&k| (OPTS[k].key, self.choice_index(k))).collect();
+        }
+        if PRESET_KEYS.contains(&i) && self.values[o::PRESET] != 0 {
+            self.values[o::PRESET] = 0;
+            return vec![(OPTS[o::PRESET].key, self.choice_index(o::PRESET))];
+        }
+        Vec::new()
+    }
+}
+
+/// The translation key of option `key`'s label, and of its choice `value`.
+pub fn label_key(key: &str) -> String {
+    format!("{ID}.option.{key}")
+}
+
+pub fn choice_key(key: &str, value: u16) -> String {
+    format!("{ID}.option.{key}.{value}")
+}
+
+/// The toggle key's label.
+pub const TOGGLE_KEY_LABEL_KEY: &str = "living_camera.key.toggle";
+
+#[cfg(test)]
+/// `assets/living_camera/lang/en_us.json`: every label the page and the key
+/// mapping show, in English.
+pub fn english() -> Vec<(String, String)> {
+    let mut lines = Vec::new();
+    for opt in &OPTS {
+        lines.push((label_key(opt.key), opt.label.to_owned()));
+        for (value, name) in opt.choices {
+            lines.push((choice_key(opt.key, *value), (*name).to_owned()));
+        }
+    }
+    lines.push((TOGGLE_KEY_LABEL_KEY.to_owned(), TOGGLE_KEY_LABEL.to_owned()));
+    lines
 }
 
 /// The line in chat when the toggle key flips the mod.
@@ -355,22 +372,6 @@ pub fn local(velocity: [f64; 2], yaw: f32) -> (f32, f32) {
     let forward = -x as f32 * s + z as f32 * c;
     let right = -x as f32 * c - z as f32 * s;
     (forward, right)
-}
-
-/// The player's eyes above their feet, standing.
-pub const EYE_HEIGHT: f64 = 1.62;
-
-/// Whether a block the eyes are in is water (swimming).
-pub fn is_water(block: &str) -> bool {
-    matches!(
-        block,
-        "minecraft:water"
-            | "minecraft:bubble_column"
-            | "minecraft:kelp"
-            | "minecraft:kelp_plant"
-            | "minecraft:seagrass"
-            | "minecraft:tall_seagrass"
-    )
 }
 
 /// How much of the effects horizontal speed `bps` leaves, fading from
@@ -651,6 +652,55 @@ pub fn pose() -> Pose {
 mod tests {
     use super::*;
 
+    /// The page keeps choice positions: they read back as the same values.
+    #[test]
+    fn choices_read_as_the_values_they_stand_for() {
+        let s = Settings::from_choices(|key| match key {
+            "strafe" => Some(0),
+            "smoothness" => Some(3),
+            "enabled" => Some(1),
+            "bounce" => Some(99),
+            _ => None,
+        });
+        assert_eq!(s.get(o::STRAFE), 0);
+        assert_eq!(s.get(o::SMOOTHNESS), 30);
+        assert!(s.enabled());
+        assert_eq!(s.get(o::BOUNCE), OPTS[o::BOUNCE].default, "an unknown position is the default");
+        let d = Settings::default();
+        for i in 0..OPTS.len() {
+            let at: u32 = d.choice_index(i).parse().unwrap();
+            assert_eq!(OPTS[i].choices[at as usize].0, OPTS[i].default);
+        }
+    }
+
+    #[test]
+    fn a_preset_picked_on_the_page_sets_its_values_and_a_hand_change_makes_it_custom() {
+        // The page kept Cinematic (position 3) already.
+        let mut s = Settings::from_choices(|key| (key == "preset").then_some(3));
+        let kept = s.changed("preset");
+        assert_eq!(kept.len(), PRESET_KEYS.len());
+        assert_eq!(s.get(o::SMOOTHNESS), 60);
+        assert!(kept.contains(&("smoothness", "2".to_owned())));
+        // Then the player changes the strafe lean by hand.
+        let kept = s.changed("strafe");
+        assert_eq!(s.get(o::PRESET), 0);
+        assert_eq!(kept, [("preset", "0".to_owned())]);
+        // Custom picked, or an option outside the presets: nothing more.
+        assert!(s.changed("preset").is_empty());
+        assert!(s.changed("direction").is_empty());
+        assert!(s.changed("nothing").is_empty());
+    }
+
+    #[test]
+    fn every_label_is_in_english() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/living_camera/lang/en_us.json");
+        let file = std::fs::read_to_string(path).unwrap_or_default();
+        for (key, text) in english() {
+            let line = format!("{key:?}: {text:?}");
+            assert!(file.contains(&line), "{line} missing from en_us.json");
+        }
+    }
+
     fn stored<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         |key| pairs.iter().find(|p| p.0 == key).map(|p| p.1.to_owned())
     }
@@ -685,33 +735,6 @@ mod tests {
         assert_eq!(s.get(o::STRAFE), 75);
         assert_eq!(s.get(o::STEP_BOB), 50, "not a choice: the default");
         assert_eq!(s.get(o::SMOOTHNESS), 60);
-    }
-
-    #[test]
-    fn buttons_cycle_store_and_reset() {
-        let mut s = Settings::default();
-        let labels = s.labels();
-        assert_eq!(labels.len(), OPTS.len() + 1);
-        assert_eq!(labels[o::ENABLED], "Living Camera: ON");
-        assert_eq!(labels[o::SMOOTHNESS], "Smoothness: Normal");
-        assert_eq!(labels[OPTS.len()], RESET_LABEL);
-        assert_eq!(s.labels()[o::PRESET], "Preset: Default");
-        // Changing an effect by hand makes the preset Custom.
-        assert_eq!(
-            s.click(o::STRAFE),
-            [("strafe", "150".to_owned()), ("preset", "0".to_owned())]
-        );
-        assert_eq!(s.click(o::STRAFE), [("strafe", "200".to_owned())]);
-        assert_eq!(s.click(o::STRAFE), [("strafe", "0".to_owned())]);
-        assert_eq!(s.labels()[o::STRAFE], "Strafe lean: OFF");
-        assert_eq!(s.labels()[o::PRESET], "Preset: Custom");
-        assert_eq!(s.toggle(), ("enabled", "0".to_owned()));
-        assert!(!s.enabled());
-        let stored = s.click(OPTS.len());
-        assert_eq!(s, Settings::default());
-        assert_eq!(stored.len(), OPTS.len());
-        assert!(s.click(99).is_empty());
-        assert_eq!(toggled_line(false), "Living Camera OFF");
     }
 
     #[test]
@@ -881,23 +904,18 @@ mod tests {
             }
         }
         assert!(preset_values(0).is_none());
+        // Picked on the page: Cinematic, then PvP.
         let mut s = Settings::default();
-        // Default, then Cinematic, PvP, Subtle and back to Default.
-        let stored = s.click(o::PRESET);
-        assert_eq!(s.get(o::PRESET), 3);
-        assert_eq!(stored.len(), OPTS.len());
+        s.values[o::PRESET] = 3;
+        assert_eq!(s.changed("preset").len(), PRESET_KEYS.len());
         assert_eq!(s.get(o::SMOOTHNESS), 60);
-        s.click(o::PRESET);
-        assert_eq!(s.labels()[o::PRESET], "Preset: PvP");
+        s.values[o::PRESET] = 4;
+        s.changed("preset");
         assert_eq!((s.get(o::STEP_BOB), s.get(o::AIMING)), (0, 0));
-        s.click(o::PRESET);
-        assert_eq!(s.get(o::PRESET), 1);
-        s.click(o::PRESET);
-        assert_eq!(s, Settings::default(), "Default is the defaults");
-        // From Custom, the next preset is Subtle.
-        s.click(o::TURN);
-        s.click(o::PRESET);
-        assert_eq!(s.get(o::PRESET), 1);
+        // Default is the defaults.
+        s.values[o::PRESET] = 2;
+        s.changed("preset");
+        assert_eq!(s, Settings::default());
         // Presets leave the rest alone.
         let mut s = Settings::default();
         s.values[o::DIRECTION] = 1;

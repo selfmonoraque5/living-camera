@@ -1,0 +1,18 @@
+id = "living_camera"
+name = "Living Camera"
+version = "2.0.0"
+description = "The camera leans into strafes, tips with jumps and falls, sways on turns, dips on landing, bobs with your steps and breathes. Every effect is adjustable."
+authors = ["selfmonoraque5"]
+license = "MIT"
+license_url = "https://github.com/selfmonoraque5/living-camera/blob/main/LICENSE"
+credits = "Inspired by Camera Overhaul by Mirsario; none of its code."
+homepage = "https://github.com/selfmonoraque5/living-camera"
+issues = "https://github.com/selfmonoraque5/living-camera/issues"
+api = "0.2"
+side = "client"
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "f00125f61f794aaa3d4e950d301f353b35b6ee3d"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
